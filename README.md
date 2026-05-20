@@ -10,7 +10,7 @@ private email address is converted to a stable pseudonym generated with an HMAC
 using `ANONYMIZATION_SALT`, so the same private email keeps the same pseudonym
 across pipeline runs without publishing the original name or email address.
 
-## What gets mirroblue
+## What gets mirrogreen
 
 - All Git branches from the GitLab repository except `github-pr-*` import
   branches.
