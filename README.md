@@ -67,14 +67,14 @@ GitLab branch and opens or updates a GitLab merge request. GitLab remains the
 canonical repository: merge the generated GitLab MR, then the GitLab mirror
 publishes the accepted change back to GitHub.
 
-Configure these GitHub Actions values in the GitHub mirror repository:
+Configure these GitHub Actions secrets in the GitHub mirror repository:
 
-| Type | Name | Example | Notes |
-| --- | --- | --- | --- |
-| Secret | `GITLAB_TOKEN` | `glpat-...` | GitLab token with `api` and `write_repository` access to the source GitLab project. |
-| Variable | `GITLAB_PROJECT_PATH` | `my-group/my-project` | GitLab project path used for clone and API calls. |
-| Variable | `GITLAB_URL` | `https://gitlab.com` | Optional. Defaults to `https://gitlab.com`. |
-| Variable | `GITLAB_TARGET_BRANCH` | `main` | Optional. Defaults to the GitHub PR base branch name. |
+| Secret | Example | Notes |
+| --- | --- | --- |
+| `GITLAB_TOKEN` | `glpat-...` | GitLab token with `api` and `write_repository` access to the source GitLab project. |
+| `GITLAB_PROJECT_PATH` | `my-group/my-project` | GitLab project path used for clone and API calls. |
+| `GITLAB_URL` | `https://gitlab.com` | Optional. Defaults to `https://gitlab.com`. |
+| `GITLAB_TARGET_BRANCH` | `main` | Optional. Defaults to the GitHub PR base branch name. |
 
 The workflow uses `pull_request_target` only after a PR is merged. It does not
 run code from the pull request. It fetches the PR commits, builds a patch series,

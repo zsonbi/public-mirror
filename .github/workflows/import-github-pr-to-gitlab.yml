@@ -19,10 +19,10 @@ jobs:
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     env:
-      GITLAB_PROJECT_PATH: ${{ vars.GITLAB_PROJECT_PATH }}
-      GITLAB_TARGET_BRANCH: ${{ vars.GITLAB_TARGET_BRANCH }}
+      GITLAB_PROJECT_PATH: ${{ secrets.GITLAB_PROJECT_PATH }}
+      GITLAB_TARGET_BRANCH: ${{ secrets.GITLAB_TARGET_BRANCH }}
       GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
-      GITLAB_URL: ${{ vars.GITLAB_URL }}
+      GITLAB_URL: ${{ secrets.GITLAB_URL }}
       PR_AUTHOR_ID: ${{ github.event.pull_request.user.id }}
       PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
       PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
@@ -102,7 +102,7 @@ jobs:
           fi
 
           if [ -z "${GITLAB_PROJECT_PATH}" ]; then
-            echo "::error::Missing GitHub Actions variable: GITLAB_PROJECT_PATH"
+            echo "::error::Missing GitHub Actions secret: GITLAB_PROJECT_PATH"
             exit 1
           fi
 
