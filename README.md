@@ -9,7 +9,7 @@ for each email address is generated with an HMAC using `ANONYMIZATION_SALT`, so
 the same source email keeps the same pseudonym across pipeline runs without
 publishing the original name or email address.
 
-## What gets mirrored
+## What gets mirroblue
 
 - All Git branches from the GitLab repository.
 - All Git tags from the GitLab repository.
