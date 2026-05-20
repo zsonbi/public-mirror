@@ -90,8 +90,16 @@ secret and stable.
 The `mirror_to_github` job runs only on the GitLab default branch. It fetches the
 full Git history, creates local branches for all GitLab branches, generates a
 temporary mailmap from every author, committer, and tagger email it finds, then
-uses `git-filter-repo` to rewrite the history. After rewriting, it force-pushes
-the anonymized branches and tags to GitHub.
+uses `git-filter-repo` to rewrite the history. The job uses
+`--replace-refs delete-no-add` so Git replace refs are not left behind in the
+generated mirror.
+
+Before anything is pushed to GitHub, the Anonymization verification step checks
+that every rewritten commit author, commit committer, and annotated tagger
+identity uses the expected pseudonym format and anonymized email domain. If that
+verification fails, the job stops without pushing.
+
+After verification, it force-pushes the anonymized branches and tags to GitHub.
 
 ## Running the mirror
 
