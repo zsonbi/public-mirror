@@ -1,0 +1,227 @@
+name: Import GitHub PR to GitLab
+
+on:
+  pull_request_target:
+    types:
+      - closed
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: import-github-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  import-to-gitlab:
+    name: Create GitLab merge request
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    env:
+      GITLAB_PROJECT_PATH: ${{ vars.GITLAB_PROJECT_PATH }}
+      GITLAB_TARGET_BRANCH: ${{ vars.GITLAB_TARGET_BRANCH }}
+      GITLAB_TOKEN: ${{ secrets.GITLAB_TOKEN }}
+      GITLAB_URL: ${{ vars.GITLAB_URL }}
+      PR_AUTHOR_ID: ${{ github.event.pull_request.user.id }}
+      PR_AUTHOR_LOGIN: ${{ github.event.pull_request.user.login }}
+      PR_BASE_REF: ${{ github.event.pull_request.base.ref }}
+      PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      PR_TITLE: ${{ github.event.pull_request.title }}
+      PR_URL: ${{ github.event.pull_request.html_url }}
+    steps:
+      - name: Checkout GitHub mirror history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Build PR patch series
+        id: patch
+        shell: bash
+        run: |
+          set -eu
+
+          pr_head_ref="refs/remotes/origin/github-pr-${PR_NUMBER}-head"
+          pr_merge_ref="refs/remotes/origin/github-pr-${PR_NUMBER}-merge"
+          patch_file="${RUNNER_TEMP}/github-pr-${PR_NUMBER}.patch"
+
+          git fetch --no-tags origin "+refs/pull/${PR_NUMBER}/head:${pr_head_ref}"
+
+          if git fetch --no-tags origin "+refs/pull/${PR_NUMBER}/merge:${pr_merge_ref}" 2>/dev/null; then
+            patch_base="$(git rev-parse "${pr_merge_ref}^1")"
+          else
+            patch_base="${PR_BASE_SHA}"
+
+            if ! git cat-file -e "${patch_base}^{commit}" 2>/dev/null; then
+              git fetch --no-tags origin "${patch_base}"
+            fi
+          fi
+
+          changed_paths="$(git diff --name-only "${patch_base}" "${pr_head_ref}")"
+
+          if printf '%s\n' "${changed_paths}" | grep -E '^(\.gitlab-ci\.yml|anonymize_git_history\.py)$' >/dev/null; then
+            echo "::error::This PR changes GitLab-only mirror automation files. Import it manually in GitLab."
+            exit 1
+          fi
+
+          if [ -z "${changed_paths}" ]; then
+            echo "has_patch=false" >> "${GITHUB_OUTPUT}"
+            echo "No file changes found in PR #${PR_NUMBER}."
+            exit 0
+          fi
+
+          git format-patch \
+            --stdout \
+            --binary \
+            --full-index \
+            "${patch_base}..${pr_head_ref}" > "${patch_file}"
+
+          if [ ! -s "${patch_file}" ]; then
+            echo "has_patch=false" >> "${GITHUB_OUTPUT}"
+            echo "No importable commits found in PR #${PR_NUMBER}."
+            exit 0
+          fi
+
+          echo "has_patch=true" >> "${GITHUB_OUTPUT}"
+          echo "patch_file=${patch_file}" >> "${GITHUB_OUTPUT}"
+
+      - name: Apply PR patch series to GitLab branch
+        if: steps.patch.outputs.has_patch == 'true'
+        shell: bash
+        env:
+          PATCH_FILE: ${{ steps.patch.outputs.patch_file }}
+        run: |
+          set -eu
+
+          if [ -z "${GITLAB_TOKEN}" ]; then
+            echo "::error::Missing GitHub Actions secret: GITLAB_TOKEN"
+            exit 1
+          fi
+
+          if [ -z "${GITLAB_PROJECT_PATH}" ]; then
+            echo "::error::Missing GitHub Actions variable: GITLAB_PROJECT_PATH"
+            exit 1
+          fi
+
+          export GITLAB_URL="${GITLAB_URL:-https://gitlab.com}"
+          export GITLAB_TARGET_BRANCH="${GITLAB_TARGET_BRANCH:-${PR_BASE_REF}}"
+          export IMPORT_BRANCH="github-pr-${PR_NUMBER}"
+
+          clone_url="$(
+            python - <<'PY'
+          import os
+          import urllib.parse
+
+          base_url = os.environ["GITLAB_URL"].rstrip("/")
+          project_path = os.environ["GITLAB_PROJECT_PATH"].strip("/")
+          token = urllib.parse.quote(os.environ["GITLAB_TOKEN"], safe="")
+          parsed = urllib.parse.urlsplit(base_url)
+          netloc = f"oauth2:{token}@{parsed.netloc}"
+          path = f"{parsed.path.rstrip('/')}/{project_path}.git"
+          print(urllib.parse.urlunsplit((parsed.scheme, netloc, path, "", "")))
+          PY
+          )"
+
+          git clone --depth=1 --branch "${GITLAB_TARGET_BRANCH}" "${clone_url}" gitlab-source
+          cd gitlab-source
+
+          git checkout -B "${IMPORT_BRANCH}"
+          git config user.name "GitHub PR Import Bot"
+          git config user.email "github-pr-import@users.noreply.github-sync.invalid"
+
+          if ! git am --3way --keep-non-patch "${PATCH_FILE}"; then
+            git am --abort || true
+            echo "::error::Could not apply GitHub PR #${PR_NUMBER} cleanly to GitLab ${GITLAB_TARGET_BRANCH}."
+            exit 1
+          fi
+
+          git push --force origin "${IMPORT_BRANCH}"
+
+          {
+            echo "GITLAB_TARGET_BRANCH=${GITLAB_TARGET_BRANCH}"
+            echo "IMPORT_BRANCH=${IMPORT_BRANCH}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Open or update GitLab merge request
+        if: steps.patch.outputs.has_patch == 'true'
+        shell: bash
+        run: |
+          set -eu
+
+          python - <<'PY'
+          import json
+          import os
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+
+          gitlab_url = os.environ.get("GITLAB_URL", "https://gitlab.com").rstrip("/")
+          project_path = os.environ["GITLAB_PROJECT_PATH"].strip("/")
+          token = os.environ["GITLAB_TOKEN"]
+          source_branch = os.environ["IMPORT_BRANCH"]
+          target_branch = os.environ["GITLAB_TARGET_BRANCH"]
+          pr_number = os.environ["PR_NUMBER"]
+          pr_title = os.environ["PR_TITLE"]
+          pr_url = os.environ["PR_URL"]
+          pr_author = os.environ["PR_AUTHOR_LOGIN"]
+          pr_head_sha = os.environ["PR_HEAD_SHA"]
+
+          encoded_project = urllib.parse.quote(project_path, safe="")
+          api_base = f"{gitlab_url}/api/v4/projects/{encoded_project}/merge_requests"
+          headers = {
+              "PRIVATE-TOKEN": token,
+              "Content-Type": "application/json",
+          }
+
+          def request(method, url, payload=None):
+              data = None
+              if payload is not None:
+                  data = json.dumps(payload).encode("utf-8")
+
+              req = urllib.request.Request(url, data=data, headers=headers, method=method)
+
+              try:
+                  with urllib.request.urlopen(req) as response:
+                      return json.loads(response.read().decode("utf-8"))
+              except urllib.error.HTTPError as error:
+                  body = error.read().decode("utf-8")
+                  raise SystemExit(f"GitLab API request failed: {error.code} {body}") from error
+
+          query = urllib.parse.urlencode(
+              {
+                  "source_branch": source_branch,
+                  "target_branch": target_branch,
+                  "state": "opened",
+              }
+          )
+          existing = request("GET", f"{api_base}?{query}")
+
+          description = "\n".join(
+              [
+                  f"Imported from GitHub PR #{pr_number}: {pr_url}",
+                  "",
+                  f"GitHub author: @{pr_author}",
+                  f"GitHub head SHA: `{pr_head_sha}`",
+                  "",
+                  "Merge this MR in GitLab to make the contribution canonical.",
+                  "The GitLab-to-GitHub mirror will publish it back to GitHub afterward.",
+              ]
+          )
+          payload = {
+              "source_branch": source_branch,
+              "target_branch": target_branch,
+              "title": f"Import GitHub PR #{pr_number}: {pr_title}",
+              "description": description,
+              "remove_source_branch": True,
+          }
+
+          if existing:
+              merge_request = request("PUT", f"{api_base}/{existing[0]['iid']}", payload)
+          else:
+              merge_request = request("POST", api_base, payload)
+
+          print(f"::notice::GitLab merge request ready: {merge_request['web_url']}")
+          PY
