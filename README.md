@@ -10,14 +10,17 @@ private email address is converted to a stable pseudonym generated with an HMAC
 using `ANONYMIZATION_SALT`, so the same private email keeps the same pseudonym
 across pipeline runs without publishing the original name or email address.
 
-## What gets mirroblue
+## What gets mirrored
 
-- All Git branches from the GitLab repository.
+- All Git branches from the GitLab repository except `github-pr-*` import
+  branches.
 - All Git tags from the GitLab repository.
 - Git notes from `refs/notes/*`, when present and safely retargetable.
 - Commit messages and file contents are not changed.
 - Author, committer, and annotated tagger names/emails ending with
   `@mptrdev.com` are rewritten.
+- Author, committer, and annotated tagger identities with blacklisted usernames
+  are rewritten.
 - Author, committer, and annotated tagger names/emails from other domains are
   preserved.
 - The GitHub repository is force-pushed and pruned to match the GitLab source.
@@ -44,6 +47,7 @@ Optional variable:
 | --- | --- | --- |
 | `ANONYMIZED_EMAIL_DOMAIN` | `users.noreply.github-sync.invalid` | Domain used for rewritten commit email addresses. |
 | `ANONYMIZE_EMAIL_DOMAINS` | `mptrdev.com` | Comma-separated list of private email domains to anonymize. Do not include `@`. |
+| `ANONYMIZE_USERNAMES` | `zsonbi` | Comma-separated list of exact usernames to anonymize. No regex is used. |
 
 ## GitHub token setup
 
@@ -140,25 +144,32 @@ Git history, tags, and Git notes, creates local branches for all GitLab
 branches, then runs `anonymize_git_history.py`.
 
 The helper script generates a temporary mailmap for identities whose email
-addresses end with the domains listed in `ANONYMIZE_EMAIL_DOMAINS`, then uses
-`git-filter-repo` to rewrite the history. It also removes `.gitlab-ci.yml` and
-`anonymize_git_history.py` from the rewritten mirror history so the GitHub
-repository does not receive the GitLab-only mirror automation. The job uses
-`--replace-refs delete-no-add` so Git replace refs are not left behind in the
-generated mirror.
+addresses end with the domains listed in `ANONYMIZE_EMAIL_DOMAINS` or whose
+username matches `ANONYMIZE_USERNAMES`, then uses `git-filter-repo` to rewrite
+the history. Username matching is exact and does not use regular expressions.
+The match checks the Git author, committer, or tagger name, plus common GitHub
+noreply email username forms such as `zsonbi@users.noreply.github.com` and
+`123+zsonbi@users.noreply.github.com`.
+
+The helper also removes `.gitlab-ci.yml` and `anonymize_git_history.py` from the
+rewritten mirror history so the GitHub repository does not receive the
+GitLab-only mirror automation. The job uses `--replace-refs delete-no-add` so
+Git replace refs are not left behind in the generated mirror.
 
 Git notes are exported before the rewrite and restored after the rewrite onto
 the new object IDs when a safe mapping exists. Notes whose target objects were
 removed from the mirrored history are skipped.
 
 Before anything is pushed to GitHub, the Anonymization verification step checks
-that no private-domain commit author, commit committer, or annotated tagger
-email remains in the rewritten history. It also checks that generated pseudonyms
-use the expected format and anonymized email domain. If verification fails, the
-job stops without pushing.
+that no private-domain or blacklisted-username commit author, commit committer,
+or annotated tagger identity remains in the rewritten history. It also checks
+that generated pseudonyms use the expected format and anonymized email domain.
+If verification fails, the job stops without pushing.
 
 After verification, it force-pushes the anonymized branches and tags to GitHub.
 It also force-pushes `refs/notes/*` when Git notes are present.
+Imported GitHub PR branches named `github-pr-*` are skipped and pruned from the
+GitHub mirror.
 
 ## Running the mirror
 
@@ -179,7 +190,9 @@ You can also run the pipeline manually from **Build > Pipelines > Run pipeline**
    commits.
 4. Review and merge the generated MR in GitLab.
 5. The GitLab mirror rewrites private `@mptrdev.com` identities, preserves public
-   contributor identities, and force-pushes the canonical result back to GitHub.
+   contributor identities unless their username is blacklisted, skips
+   `github-pr-*` import branches, and force-pushes the canonical result back to
+   GitHub.
 
 If the import workflow cannot apply the PR cleanly to GitLab, it fails without
 pushing to GitLab. Import the contribution manually in GitLab in that case.
